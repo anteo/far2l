@@ -367,3 +367,4 @@ void WINAPI UnixTimeToFileTime(DWORD UnixTime,FILETIME *FileTime);
 #endif
 
 #endif // __MULTIARC_HPP__
+
