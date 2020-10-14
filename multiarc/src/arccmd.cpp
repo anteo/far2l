@@ -7,7 +7,7 @@
 ArcCommand::ArcCommand(struct PluginPanelItem *PanelItem,int ItemsNumber,
                        const char *FormatString,const char *ArcName,const char *ArcDir,
                        const char *Password,const char *AllFilesMask,int IgnoreErrors,
-                       int CommandType,int ASilent,const char *RealArcDir)
+                       int CommandType,int ASilent,const char *RealArcDir,int DefaultCodepage)
 {
   NeedSudo = false;
   Silent=ASilent;
@@ -18,6 +18,9 @@ ArcCommand::ArcCommand(struct PluginPanelItem *PanelItem,int ItemsNumber,
 */
   ExecCode=(DWORD)-1;
 
+  ArcCommand::DefaultCodepage = DefaultCodepage;
+
+//  fprintf(stderr, "ArcCommand::ArcCommand = %d, FormatString=%s\n", ArcCommand::DefaultCodepage, FormatString);
   if (*FormatString==0)
     return;
 
@@ -108,8 +111,12 @@ bool ArcCommand::ProcessCommand(std::string FormatString, int CommandType, int I
   if ((Hide == 1 && CommandType == 0) || CommandType == 2)
     Hide = 0;
 
-  // charset workarounds for unzip
-  if (strncmp(Command.c_str(), "unzip ", 6) == 0) {
+  ExecCode = Execute(this, Command, Hide, Silent, NeedSudo, Password.empty(), ListFileName);
+  fprintf(stderr, "ArcCommand::ProcessCommand: ExecCode=%d for '%s'\n", ExecCode, Command.c_str());
+
+// Unzip in MacOS definatelt doesn't have -I and -O options, so dont even try encoding workarounds
+#ifndef __WXOSX__
+  if (ExecCode == 11 && strncmp(Command.c_str(), "unzip ", 6) == 0) {
     // trying as utf8
     std::string CommandRetry = Command;
     CommandRetry.insert(6, "-I utf8 -O utf8 ");
@@ -117,38 +124,41 @@ bool ArcCommand::ProcessCommand(std::string FormatString, int CommandType, int I
     if (ExecCode == 11) {
       // "11" means file was not found in archive. retrying as oem
       CommandRetry = Command;
-      unsigned int actual_oemcp = WINPORT(GetOEMCP)();
-      CommandRetry.insert(6, StrPrintf("-I CP%u -O CP%u ", actual_oemcp, actual_oemcp));
+      unsigned int retry_cp = (DefaultCodepage > 0) ? DefaultCodepage : WINPORT(GetOEMCP)();
+      CommandRetry.insert(6, StrPrintf("-I CP%u -O CP%u ", retry_cp, retry_cp));
       ExecCode = Execute(this, CommandRetry, Hide, Silent, NeedSudo, Password.empty(), ListFileName);
     }
     if (ExecCode == 1) {
       // "1" exit code for unzip is warning only, no need to bother user
       ExecCode = 0;
     }
-  } else {
-    ExecCode = Execute(this, Command, Hide, Silent, NeedSudo, Password.empty(), ListFileName);
-    fprintf(stderr, "ArcCommand::ProcessCommand: ExecCode=%d for '%s'\n", ExecCode, Command.c_str());
-    if (ExecCode == 12 && strncmp(Command.c_str(), "zip -d", 6) == 0) {
+  } else if (ExecCode == 12 && strncmp(Command.c_str(), "zip -d", 6) == 0) {
 
-      for(size_t i_entries = 6; i_entries + 1 < Command.size(); ++i_entries) {
-        if (Command[i_entries] == ' ' && Command[i_entries + 1] != ' ' && Command[i_entries + 1] != '-' ) {
-          i_entries = Command.find(' ', i_entries + 1);
-          if (i_entries != std::string::npos) {
-            std::wstring wstr = StrMB2Wide(Command.substr(i_entries));
-            std::vector<char> oemstr(wstr.size() * 6 + 2);
-            WINPORT(WideCharToMultiByte)(CP_OEMCP, 0, wstr.c_str(),
-                wstr.size() + 1, &oemstr[0], oemstr.size() - 1, 0, 0);
-            std::string CommandRetry = Command.substr(0, i_entries);
-            CommandRetry.append(&oemstr[0]);
-            ExecCode = Execute(this, CommandRetry.c_str(), Hide, Silent, NeedSudo, Password.empty(), ListFileName);
-            fprintf(stderr, "ArcCommand::ProcessCommand: retry ExecCode=%d for '%s'\n", ExecCode, CommandRetry.c_str());
-          }
-          break;
-        }
-      }
-    }
+     for(size_t i_entries = 6; i_entries + 1 < Command.size(); ++i_entries) {
+       if (Command[i_entries] == ' ' && Command[i_entries + 1] != ' ' && Command[i_entries + 1] != '-' ) {
+         i_entries = Command.find(' ', i_entries + 1);
+         if (i_entries != std::string::npos) {
+           std::wstring wstr = StrMB2Wide(Command.substr(i_entries));
+           std::vector<char> oemstr(wstr.size() * 6 + 2);
+           char def_char = '\x01';
+           BOOL def_char_used = FALSE;
+           unsigned int retry_cp = (DefaultCodepage > 0) ? DefaultCodepage : WINPORT(GetOEMCP)();
+           WINPORT(WideCharToMultiByte)(retry_cp, 0, wstr.c_str(),
+               wstr.size() + 1, &oemstr[0], oemstr.size() - 1, &def_char, &def_char_used);
+           if (!def_char_used) {
+             std::string CommandRetry = Command.substr(0, i_entries);
+             CommandRetry.append(&oemstr[0]);
+             ExecCode = Execute(this, CommandRetry.c_str(), Hide, Silent, NeedSudo, Password.empty(), ListFileName);
+             fprintf(stderr, "ArcCommand::ProcessCommand: retry ExecCode=%d for '%s'\n", ExecCode, CommandRetry.c_str());
+           } else {
+             fprintf(stderr, "ArcCommand::ProcessCommand: can't translate to CP%u: '%s'\n", retry_cp, Command.c_str());
+           }
+         }
+         break;
+       }
+     }
   }
-
+#endif
   if (ExecCode==RETEXEC_ARCNOTFOUND)
     return false;
 
@@ -184,7 +194,7 @@ void ArcCommand::DeleteBraces(std::string &Command)
       return;
 
     left = Command.rfind('{', right - 1);
-    if (right == std::string::npos)
+    if (left == std::string::npos)
       return;
 
     bool NonEmptyVar = false;
@@ -290,6 +300,25 @@ int ArcCommand::ReplaceVar(std::string &Command)
 /////////////////////////////////
   switch (Command[2])
   {
+    case 'T': /* charset, if known */
+      Command.clear();
+      for (int N = 0; N < ItemsNumber; ++N)
+      {
+        if(PanelItem[N].UserData && (PanelItem[N].Flags & PPIF_USERDATA))
+        {
+          struct ArcItemUserData *aud=(struct ArcItemUserData*)PanelItem[N].UserData;
+          if(aud->SizeStruct == sizeof(struct ArcItemUserData) && aud->Codepage > 0)
+          {
+            Command = StrPrintf("CP%u", aud->Codepage);
+            break;
+          }
+        }
+      }
+      if (Command.empty() && DefaultCodepage > 0)
+            Command = StrPrintf("CP%u", DefaultCodepage);
+
+      break;
+
     case 'A': case 'a': /* deprecated: short name - works same as normal name */
       Command = ArcName;
       if (PathOnly)

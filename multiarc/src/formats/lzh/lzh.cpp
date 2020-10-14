@@ -471,9 +471,15 @@ BOOL WINAPI _export LZH_GetDefaultCommands(int Type,int Command,char *Dest)
   {
     // Correct Commands for LHA 2.55!
     static const char *Commands[]={
+#ifdef HAVE_LIBARCHIVE
+    /*Extract               */"^libarch X %%A {-cs=%%T} {-pwd=%%P} -- %%FMq4096",
+    /*Extract without paths */"^libarch x %%A {-cs=%%T} {-pwd=%%P} -- %%FMq4096",
+    /*Test                  */"^libarch t %%A {-cs=%%T}",
+#else
     /*Extract               */"lha x -a -c -d -m {-w%%W} %%a @%%lM",
     /*Extract without paths */"lha e -a -c -m {-w%%W} %%a @%%lM",
     /*Test                  */"lha t -r2 -a -m {-w%%W} %%a",
+#endif
     /*Delete                */"lha d -r2 -a -m {-w%%W} %%a @%%lM",
     /*Comment archive       */"",
     /*Comment files         */"",
@@ -485,7 +491,11 @@ BOOL WINAPI _export LZH_GetDefaultCommands(int Type,int Command,char *Dest)
     /*Move files            */"lha m -a -m {-w%%W} %%a @%%lM",
     /*Add files and folders */"lha a -a -r -x -p -m {-w%%W} {%%S} %%a @%%lM",
     /*Move files and folders*/"lha a -a -r -x -p -m {-w%%W} {%%S} %%a @%%lM",
+#ifdef HAVE_LIBARCHIVE
+    /*"All files" mask      */""
+#else
     /*"All files" mask      */"*.*"
+#endif
     };
     if (Command < (int)(ARRAYSIZE(Commands)))
     {

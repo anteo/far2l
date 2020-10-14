@@ -8,8 +8,6 @@ include(src/Colorer-library/cmake/utils.cmake)
 colorer_extract_version()
 message(STATUS "Build Colorer: ${COLORER_VERSION}")
 
-add_subdirectory("${LIBCOLORER_TREE}" "${CMAKE_BINARY_DIR}/Colorer-library/src")
-
 set(SOURCES
     src/pcolorer2/ChooseTypeMenu.h
     src/pcolorer2/ConsoleAnnotation.h
@@ -37,41 +35,57 @@ if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     set(CMAKE_SHARED_MODULE_CREATE_CXX_FLAGS "${CMAKE_SHARED_MODULE_CREATE_CXX_FLAGS} -flat_namespace -undefined suppress")
 endif()
 
-FIND_PACKAGE(Minizip REQUIRED)
 FIND_PACKAGE(Spdlog REQUIRED)
 FIND_PACKAGE(XercesC REQUIRED)
-
-target_include_directories(colorer
-    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/Colorer-library/src
-	PUBLIC ${SPDLOG_INCLUDE_DIR}
-	PUBLIC ${MINIZIP_INCLUDE_DIRS}
-	PUBLIC ${XERCESC_INCLUDE_DIR}
-    )
-
-target_link_libraries(colorer
-	PUBLIC ${MINIZIP_LIBRARIES}
-    PUBLIC ${XERCESC_LIBRARIES}
-    utils
-    colorer_lib
-    )
 
 # sometimes libstd requires linking to libfmt, sometimes not
 # so, if libfmt there - lets link to it, if not - then dont care
 FIND_PACKAGE(fmt)
 
+# using fmt_LIBRARY directrly target_link_libraries fails build
+# so have to copy it into intermediate var but only if fmt_FOUND
 if (fmt_FOUND)
-    target_link_libraries(colorer
-	    PUBLIC ${fmt_LIBRARY}
-        )
+    set(fmt_LIBRARY_OPTIONAL "${fmt_LIBRARY}")
+else()
+    set(fmt_LIBRARY_OPTIONAL "")
 endif()
 
-target_compile_definitions(colorer PRIVATE
-    _UNICODE
-    UNICODE
-    __unix__
+target_include_directories(colorer
+    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/Colorer-library/src
+    PUBLIC ${SPDLOG_INCLUDE_DIR}
+    PUBLIC ${XERCESC_INCLUDE_DIR}
+    )
+
+target_link_libraries(colorer
+    ${XERCESC_LIBRARIES}
+    ${fmt_LIBRARY_OPTIONAL}
+    utils
+    colorer_lib
+    )
+
+set (SPDLOG_DEFINES
     SPDLOG_DISABLE_TID_CACHING
     SPDLOG_NO_THREAD_ID
     SPDLOG_NO_TLS
+)
+
+if (NOT EXISTS "${SPDLOG_INCLUDE_DIR}/spdlog/fmt/bundled")
+  if (fmt_FOUND)
+    set (SPDLOG_DEFINES
+        ${SPDLOG_DEFINES}
+        SPDLOG_FMT_EXTERNAL=ON
+    )
+    message("Forcing SPDLOG_FMT_EXTERNAL cuz FMT installed and missing ${SPDLOG_INCLUDE_DIR}/spdlog/fmt/bundled")
+  else()
+    message("NOT forcing SPDLOG_FMT_EXTERNAL cuz FMT NOT installed")
+  endif()
+endif()
+
+target_compile_definitions(colorer PUBLIC
+    _UNICODE
+    UNICODE
+    __unix__
+    ${SPDLOG_DEFINES}
 )
 
 target_include_directories(colorer PRIVATE ${LIBCOLORER_TREE}/src)
@@ -91,3 +105,6 @@ add_custom_command(TARGET colorer POST_BUILD
    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/configs
    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/configs "${INSTALL_DIR}/Plugins/colorer"
 )
+
+add_subdirectory("${LIBCOLORER_TREE}" "${CMAKE_BINARY_DIR}/Colorer-library/src")
+
